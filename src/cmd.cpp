@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "bt.h"
 #include "config.h"
 #include "device/usbd.h"
 #include "pico/time.h"
@@ -15,7 +16,8 @@
 bool is_pico_cmd(uint8_t report_id) {
     if (report_id == 0xf6 ||
         report_id == 0xf7 ||
-        report_id == 0xf8
+        report_id == 0xf8 ||
+        report_id == 0xf9
     ) {
         return true;
     }
@@ -37,6 +39,19 @@ uint16_t pico_cmd_get(uint8_t report_id, uint8_t *buffer, uint16_t reqlen) {
         const auto len = std::min(strlen(PICO_PROGRAM_VERSION_STRING), static_cast<size_t>(reqlen));
         memcpy(buffer, PICO_PROGRAM_VERSION_STRING, len);
         return len;
+    }
+    if (report_id == 0xf9) {
+        // [-128,0]
+        int8_t rssi = 0;
+        bt_get_signal_strength(&rssi);
+        if (reqlen == 0) {
+            return 0;
+        }
+        buffer[0] = rssi;
+#if ENABLE_VERBOSE
+        printf("[HID] 0xf9 RSSI=%d raw=0x%02X\n", rssi, buffer[0]);
+#endif
+        return 1;
     }
     return 0;
 }

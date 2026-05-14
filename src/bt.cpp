@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <vector>
 #include "btstack_event.h"
+#include "gap.h"
 #include "l2cap.h"
 #include "pico/cyw43_arch.h"
 #include "utils.h"
@@ -37,6 +38,7 @@ static uint16_t hid_control_cid;
 static uint16_t hid_interrupt_cid;
 static bt_data_callback_t bt_data_callback = nullptr;
 static bool check_dse = false;
+static int8_t bt_rssi = 0;
 unordered_map<uint8_t, vector<uint8_t> > feature_data;
 queue_t send_fifo;
 queue_t priority_send_fifo;
@@ -72,6 +74,15 @@ bool bt_disconnect() {
     // 0x13 = remote user terminated connection
     hci_send_cmd(&hci_disconnect, acl_handle, 0x13);
     return true;
+}
+
+void bt_get_signal_strength(int8_t *rssi) {
+    if (acl_handle != HCI_CON_HANDLE_INVALID) {
+        gap_read_rssi(acl_handle);
+    }
+    if (rssi != nullptr) {
+        *rssi = bt_rssi;
+    }
 }
 
 void bt_l2cap_init() {
@@ -198,7 +209,14 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
         case HCI_EVENT_COMMAND_COMPLETE: {
             const uint8_t status = hci_event_command_complete_get_return_parameters(packet)[0];
             const uint16_t opcode = hci_event_command_complete_get_command_opcode(packet);
-            printf("[HCI] CmdComplete %s(0x%04X) status=0x%02X\n", opcode_to_str(opcode), opcode, status);
+            if (opcode != HCI_OPCODE_HCI_READ_RSSI) {
+                printf("[HCI] CmdComplete %s(0x%04X) status=0x%02X\n", opcode_to_str(opcode), opcode, status);
+            }
+            if (opcode == HCI_OPCODE_HCI_READ_RSSI) {
+                if (status != ERROR_CODE_SUCCESS || packet[1] < 7) {
+                    printf("[HCI] RSSI complete failed status=0x%02X param_len=%u\n", status, packet[1]);
+                }
+            }
             break;
         }
 
@@ -207,6 +225,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
             if (status == 0) {
                 const hci_con_handle_t handle = hci_event_connection_complete_get_connection_handle(packet);
                 acl_handle = handle;
+                bt_rssi = 0;
                 hci_event_connection_complete_get_bd_addr(packet, current_device_addr);
                 printf("[HCI] ACL connected handle=0x%04X\n", handle);
                 printf("[HCI] Request authentication on handle=0x%04X\n", handle);
@@ -316,12 +335,21 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
             device_found = false;
             new_pair = false;
             acl_handle = HCI_CON_HANDLE_INVALID;
+            bt_rssi = 0;
             hid_control_cid = 0;
             hid_interrupt_cid = 0;
             feature_data.clear();
             cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, false);
             printf("[HCI] Disconnected reason=0x%02X, start inquiry\n", reason);
             gap_inquiry_start(30);
+            break;
+        }
+
+        case GAP_EVENT_RSSI_MEASUREMENT: {
+            const hci_con_handle_t handle = gap_event_rssi_measurement_get_con_handle(packet);
+            if (handle == acl_handle) {
+                bt_rssi = static_cast<int8_t>(gap_event_rssi_measurement_get_rssi(packet));
+            }
             break;
         }
     }
